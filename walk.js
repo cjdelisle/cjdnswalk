@@ -79,7 +79,6 @@ const mkNode = (scheme, fullName) => {
         publicKey: parsed.key,
         reachableBy: {},
         testedPeers: {},
-        hints: {},
         visited: false,
         scheme: Cjdnsencode.parse(scheme),
         schemeBin: scheme,
@@ -123,8 +122,13 @@ const onMessage = (msg, ping, ctx) => {
         time: +new Date()
     };
 
+    if (ping.isPing) {
+        console.log(JSON.stringify(['ann', ping.parentNode.publicKey, msg.routeHeader.publicKey, rb]));
+        return;
+    }
+
 //    console.log(node);
-    const hints = NodesResponse.parse(msg.contentBenc);
+    const hints = ('n' in msg.contentBenc) ? NodesResponse.parse(msg.contentBenc) : [];
 
     for (let i = hints.length - 1; i >= 0; i--) {
         if (hints.indexOf(hints[i]) !== i) {
@@ -134,15 +138,30 @@ const onMessage = (msg, ping, ctx) => {
 
     var discoveredSomething = false;
     if (!node.visited) {
+        ping.querySet.hints = ping.querySet.hints || {};
         hints.forEach((h) => {
             const parsed = parseNodeName(h);
             if (parsed.path === '0000.0000.0000.0001') { return; }
-            if (node.testedPeers[parsed.key]) { return; }
-            if (node.hints[parsed.key]) { return; }
             parsed.cpath = Cjdnsplice.reEncode(parsed.path, node.scheme, Cjdnsplice.FORM_CANNONICAL);
-            parsed.fullPath = Cjdnsplice.splice(parsed.path, msg.routeHeader.switchHeader.label);
-            node.hints[parsed.key] = parsed;
             console.log(JSON.stringify(['gpr', node.publicKey, parsed.key, parsed.cpath]));
+            if (node.testedPeers[parsed.key]) { return; }
+            if (ping.querySet.hints[parsed.key]) { return; }
+            parsed.fullPath = Cjdnsplice.splice(parsed.path, msg.routeHeader.switchHeader.label);
+
+const ppath = parseNodeName(ping.target).path;
+if (ppath !== msg.routeHeader.switchHeader.label) {
+    console.log(ping.target);
+    console.log(msg.routeHeader.switchHeader.label);
+    throw new Error('label mismatch');
+}
+if (parsed.fullPath.replace(/^[0\.]*/, '').length < ppath.replace(/^[0\.]*/, '').length) {
+    console.log(parsed.fullPath);
+    console.log(ppath);
+    console.log(parsed.path);
+    throw new Error('short label');
+}
+
+            ping.querySet.hints[parsed.key] = parsed;
             discoveredSomething = true;
         });
     }
@@ -150,23 +169,27 @@ const onMessage = (msg, ping, ctx) => {
     if (discoveredSomething) {
         const path = hints[0].replace(/^v[0-9]+\.([0-9a-f\.]{19})\.[^\.]+\.k$/, (all, a) => (a));
         if (path.length !== 19) { throw new Error(); }
-        sendToNode(ctx, ping.target, path, ping.parentNode, ping.labelPc);
+        sendToNode(ctx, ping.target, path, ping.parentNode, ping.labelPc, ping.parentTarget, ping.querySet);
     } else {
         //console.log(ping.parentNode.publicKey + ' -> ' + msg.routeHeader.publicKey + ' ' + JSON.stringify(rb))
         console.log(JSON.stringify(['ann', ping.parentNode.publicKey, msg.routeHeader.publicKey, rb]));
         ping.parentNode.testedPeers[msg.routeHeader.publicKey] = { time: +new Date() };
-        if (!node.visited) {
-            node.visited = true;
-            for (const k in node.hints) {
-                const v = node.hints[k];
-                const childNode = ctx.nodes[v.key];
-                if (childNode && childNode.reachableBy[msg.routeHeader.publicKey]) { continue; }
-                if (v.fullPath === 'ffff.ffff.ffff.ffff') {
-                    console.log(JSON.stringify(["hzn", v.key, v.path, msg.routeHeader.switchHeader.label]))
-                    continue;
-                }
-                sendToNode(ctx, 'v' + v.v + '.' + v.fullPath + '.' + v.key, '0000.0000.0000.0001', node, v.cpath);
+        if (node.visited) { return; }
+        node.visited = true;
+        if (!ping.querySet) { return; }
+        for (const k in ping.querySet.hints) {
+            const v = ping.querySet.hints[k];
+            const childNode = ctx.nodes[v.key];
+            if (childNode && childNode.reachableBy[msg.routeHeader.publicKey]) { continue; }
+            if (v.fullPath === 'ffff.ffff.ffff.ffff') {
+                console.log(JSON.stringify(["hzn", v.key, v.path, msg.routeHeader.switchHeader.label]))
+                continue;
             }
+            let request = '0000.0000.0000.0001';
+            if (childNode && childNode.visited) {
+                request = "ping";
+            }
+            sendToNode(ctx, 'v' + v.v + '.' + v.fullPath + '.' + v.key, '0000.0000.0000.0001', node, v.cpath, ping.target, {});
         }
     }
     //console.log(msg);
@@ -199,13 +222,24 @@ const onMessage = (msg, ping, ctx) => {
 const MAX_REQS = 10;
 const TIMEOUT_MS = 1000 * 30;
 
-const sendToNode = (ctx, target, nearPath, parentNode, labelPc) => {
+const sendToNode = (ctx, target, nearPath, parentNode, labelPc, parentTarget, querySet) => {
     const parsed = parseNodeName(target);
     if (nearPath !== '0000.0000.0000.0001') {
         const node = ctx.nodes[parsed.key];
         if (node && node.visited) {
             throw new Error(target);
             return;
+        }
+    }
+
+    if (parentTarget !== 'init') {
+        const ppath = parseNodeName(parentTarget).path;
+        if (parsed.path.replace(/^[0\.]*/, '').length < ppath.replace(/^[0\.]*/, '').length) {
+            console.log(target);
+            console.log(parentTarget);
+            console.log(labelPc);
+            console.log(nearPath);
+            throw new Error("path is shorter than parent path WAT");
         }
     }
 
@@ -229,21 +263,28 @@ const sendToNode = (ctx, target, nearPath, parentNode, labelPc) => {
         labelPc: labelPc,
         parentNode: parentNode,
         target: target,
+        parentTarget: parentTarget,
         label: parsed.path,
         time: +new Date(),
         reqs: 0,
-        timeout: undefined
+        timeout: undefined,
+        isPing: false,
+        querySet: querySet
     };
-    out.contentBenc.q = 'gp';
-    out.contentBenc.tar = new Buffer(nearPath.replace(/\./g, ''), 'hex');
-
+    if (nearPath === 'ping') {
+        out.contentBenc.q = 'pn';
+        ping.isPing = true;
+    } else {
+        out.contentBenc.q = 'gp';
+        out.contentBenc.tar = new Buffer(nearPath.replace(/\./g, ''), 'hex');
+    }
     const trySend = () => {
         if (ping.reqs++ > MAX_REQS) {
-            console.log(JSON.stringify(["fail", target]));
+            console.log(JSON.stringify(["fail", target, parentTarget]));
             delete ctx.messages[txid.toString('base64')];
             return;
         }
-        console.log(JSON.stringify(['send', target, ping.reqs]));
+        console.log(JSON.stringify(['send', target, parentTarget, ping.reqs]));
         sendMsg(ctx, out, target, nearPath);
         ping.timeout = setTimeout(trySend, TIMEOUT_MS);
     };
@@ -309,11 +350,12 @@ const main = () => {
                     console.error("failed to parse message");
                     console.error(msg.contentBenc);
                     console.error(e.stack);
+                    process.exit(0);
                 }
             }
         });
         const parsed = parseNodeName(nodeName);
-        sendToNode(ctx, nodeName, '0000.0000.0000.0001', ctx.selfNode, parsed.path);
+        sendToNode(ctx, nodeName, '0000.0000.0000.0001', ctx.selfNode, parsed.path, 'init', {});
         //v18.0000.0000.0000.0013.cmnkylz1dx8mx3bdxku80yw20gqmg0s9nsrusdv0psnxnfhqfmu0.k
 
         setInterval(() => {
