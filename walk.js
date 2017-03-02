@@ -139,11 +139,9 @@ const onMessage = (msg, ping, ctx) => {
     };
 
     if (ping.isPing) {
-        //console.log(JSON.stringify(['ann', ping.parentNode.publicKey, msg.routeHeader.publicKey, rb]));
         return;
     }
 
-//    console.log(node);
     const hints = ('n' in msg.contentBenc) ? NodesResponse.parse(msg.contentBenc) : [];
 
     for (let i = hints.length - 1; i >= 0; i--) {
@@ -164,18 +162,18 @@ const onMessage = (msg, ping, ctx) => {
             if (ping.querySet.hints[parsed.key]) { return; }
             parsed.fullPath = Cjdnsplice.splice(parsed.path, msg.routeHeader.switchHeader.label);
 
-const ppath = Cjdnskeys.parseNodeName(ping.target).path;
-if (ppath !== msg.routeHeader.switchHeader.label) {
-    console.log(ping.target);
-    console.log(msg.routeHeader.switchHeader.label);
-    throw new Error('label mismatch');
-}
-if (parsed.fullPath.replace(/^[0\.]*/, '').length < ppath.replace(/^[0\.]*/, '').length) {
-    console.log(parsed.fullPath);
-    console.log(ppath);
-    console.log(parsed.path);
-    throw new Error('short label');
-}
+            const ppath = Cjdnskeys.parseNodeName(ping.target).path;
+            if (ppath !== msg.routeHeader.switchHeader.label) {
+                console.log(ping.target);
+                console.log(msg.routeHeader.switchHeader.label);
+                throw new Error('label mismatch');
+            }
+            if (parsed.fullPath.replace(/^[0\.]*/, '').length < ppath.replace(/^[0\.]*/, '').length) {
+                console.log(parsed.fullPath);
+                console.log(ppath);
+                console.log(parsed.path);
+                throw new Error('short label');
+            }
 
             ping.querySet.hints[parsed.key] = parsed;
             discoveredSomething = true;
@@ -187,8 +185,6 @@ if (parsed.fullPath.replace(/^[0\.]*/, '').length < ppath.replace(/^[0\.]*/, '')
         if (path.length !== 19) { throw new Error(); }
         sendToNode(ctx, ping.target, path, ping.parentNode, ping.labelPc, ping.parentTarget, ping.querySet);
     } else {
-        //console.log(ping.parentNode.publicKey + ' -> ' + msg.routeHeader.publicKey + ' ' + JSON.stringify(rb))
-        //console.log(JSON.stringify(['ann', ping.parentNode.publicKey, msg.routeHeader.publicKey, rb]));
         ping.parentNode.testedPeers[msg.routeHeader.publicKey] = { time: +new Date() };
         if (node.visited) { return; }
         node.visited = true;
@@ -213,30 +209,6 @@ if (parsed.fullPath.replace(/^[0\.]*/, '').length < ppath.replace(/^[0\.]*/, '')
     }
     //console.log(msg);
 };
-
-/*
-{ routeHeader:
-   { publicKey: '1fsvgdy0ypfdl7zfhjkh2ffjkpbs0g3j1r3zm2fr2yhz6qnu1xm0.k',
-     version: 18,
-     ip: 'fcd8:a4e5:3af7:557e:72e5:f9d1:a599:e329',
-     switchHeader:
-      { label: '0000.0001.7539.33a3',
-        congestion: 0,
-        suppressErrors: 0,
-        version: 1,
-        labelShift: 39,
-        penalty: 20030 },
-     isIncoming: true },
-  dataHeader: { contentType: 'CJDHT', version: 1 },
-  contentBytes: <Buffer a1 e1 ed 98 07 be 36 26 cf 6f 0f c6 27 5a 83 b1 2a 0c dc 80 e1 8e 3f 45 bb c2 bf 6f 2c d5 a1 4f 00 00 00 01 75 39 33 a3 00 67 4e 3e 00 00 00 12 01 00 ... >,
-  contentBenc:
-   Dict {
-     ei: 1,
-     es: <Buffer 61 14 45 81 00>,
-     p: 18,
-     txid: <Buffer 79 45 11 2d 66 46 d5 94 9c 00 50 8a> } }
-
-*/
 
 const sendToNode = (ctx, target, nearPath, parentNode, labelPc, parentTarget, querySet) => {
     const parsed = Cjdnskeys.parseNodeName(target);
@@ -344,10 +316,6 @@ const sendToNode = (ctx, target, nearPath, parentNode, labelPc, parentTarget, qu
             console.log(ctx.sendMessageQueue.size + ' !== ' + oldSize);
             throw new Error("identical entries");
         }
-        //getSessionInfo(ctx, parsed.key, (ret) => {
-            //console.log(JSON.stringify(['send', ret.state, ret.handle, nowSeconds(), target, parentTarget, nowSeconds(), nearPath, ping.reqs]));
-            //sendMsg(ctx, out, target, nearPath, { parentTarget: parentTarget, reqs: ping.reqs, key: parsed.key, ping: ping, trySend: trySend });
-        //});
     };
 
     trySend();
