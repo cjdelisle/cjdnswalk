@@ -22,24 +22,13 @@ const Cjdnsadmin = require('cjdnsadmin');
 const Cjdnsplice = require('cjdnsplice');
 const Cjdnskeys = require('cjdnskeys');
 const Cjdnsencode = require('cjdnsencode');
+const Cjdnsctrl = require('cjdnsctrl');
 
 // This gives you a rough idea of the kbps of traffic which you're going to send/receive.
 // Each rtt is somewhere around 500 bytes so 100ms -> 5kB/s of network traffic.
 const CYCLE_TIME = 50;
-
-const parseNodeName = (name) => {
-    let ver;
-    let path;
-    let key;
-    const ret = name.replace(/^v([0-9]+)\.([0-9a-f\.]{19})\.([^.]{52}).k$/, (all, a, b, c) => {
-        ver = Number(a);
-        path = b;
-        key = c + '.k';
-        return '';
-    });
-    if (ret !== '') { throw new Error("failed to parse node name [" + name + "]"); }
-    return { v: ver, path: path, key: key };
-};
+const MAX_REQS = 10;
+const TIMEOUT_MS = 1000 * 10;
 
 const mkBoilerPlater = (node) => {
     return (destLabel) => {
@@ -73,7 +62,7 @@ NodesResponse.parse = (contentBenc) => {
 };
 
 const mkNode = (scheme, fullName) => {
-    const parsed = parseNodeName(fullName)
+    const parsed = Cjdnskeys.parseNodeName(fullName);
     return Object.freeze({
         version: parsed.v,
         publicKey: parsed.key,
@@ -88,26 +77,53 @@ const mkNode = (scheme, fullName) => {
     });
 };
 
-const _sendMsg = (ctx, obj) => {
-    ctx.cjdnslink.send(obj.blob);
+const keyPing = (ctx, path, txid, ping) => {
+    const out = {
+        routeHeader: {
+            switchHeader: {
+                label: path,
+                version: 1
+            },
+            isCtrl: true
+        },
+        content: {
+            type: 'KEYPING',
+            key: ctx.selfNode.publicKey,
+            version: ctx.selfNode.version,
+            content: txid
+        }
+    };
+    console.log(JSON.stringify(["sendkeyping", nowSeconds(), ping.txid, ping.target]))
+    ctx.ctrllink.send(out);
 };
 
-const sendMsg = function (ctx, toSend, target, nearPath) {
-    const parsed = parseNodeName(target);
-    ctx.sendMessageQueue.insert({
-        blob: toSend,
-        label: parsed.path,
-        nearPath: nearPath,
-        target: target
-    });
-};
+const nowSeconds = () => ( Math.floor(new Date().getTime() / 1000) );
 
 const onMessage = (msg, ping, ctx) => {
     //console.log(msg);
-    console.log(JSON.stringify(['recv', ping.target]));
-    const node = ctx.nodes[msg.routeHeader.publicKey] = ctx.nodes[msg.routeHeader.publicKey] ||
-        mkNode(msg.contentBenc.es, ping.target);
+    console.log(JSON.stringify(['recv', nowSeconds(), ping.txid, ping.target ]));
+    let node = ctx.nodes[msg.routeHeader.publicKey];
+    if (!node) {
+        node = ctx.nodes[msg.routeHeader.publicKey] = mkNode(msg.contentBenc.es, ping.target);
+        console.log(JSON.stringify(['node', nowSeconds(), ping.txid, ping.target, node.scheme ]))
+    }
     node.mut.time = +new Date();
+
+    const link = JSON.stringify([ msg.routeHeader.publicKey, Cjdnskeys.parseNodeName(ping.parentTarget).key, ping.labelPc ]);
+    if (!(link in ctx.links)) {
+        ctx.links[link] = 1;
+        console.log(JSON.stringify([
+            'link',
+            nowSeconds(),
+            ping.txid,
+            msg.routeHeader.publicKey,
+            Cjdnskeys.parseNodeName(ping.parentTarget).key,
+            ping.labelPc
+        ]));
+    }
+
+    const gpName = JSON.stringify([ msg.routeHeader.publicKey, ping.nearPath ]);
+    ctx.getPeersCalls[gpName] = 1;
 
     if (!node.schemeBin.equals(msg.contentBenc.es)) {
         throw new Error("changing scheme");
@@ -123,7 +139,7 @@ const onMessage = (msg, ping, ctx) => {
     };
 
     if (ping.isPing) {
-        console.log(JSON.stringify(['ann', ping.parentNode.publicKey, msg.routeHeader.publicKey, rb]));
+        //console.log(JSON.stringify(['ann', ping.parentNode.publicKey, msg.routeHeader.publicKey, rb]));
         return;
     }
 
@@ -140,15 +156,15 @@ const onMessage = (msg, ping, ctx) => {
     if (!node.visited) {
         ping.querySet.hints = ping.querySet.hints || {};
         hints.forEach((h) => {
-            const parsed = parseNodeName(h);
+            const parsed = Cjdnskeys.parseNodeName(h);
             if (parsed.path === '0000.0000.0000.0001') { return; }
             parsed.cpath = Cjdnsplice.reEncode(parsed.path, node.scheme, Cjdnsplice.FORM_CANNONICAL);
-            console.log(JSON.stringify(['gpr', node.publicKey, parsed.key, parsed.cpath]));
+            //console.log(JSON.stringify(['gpr', nowSeconds(), ping.txid, node.publicKey, parsed.key, parsed.cpath]));
             if (node.testedPeers[parsed.key]) { return; }
             if (ping.querySet.hints[parsed.key]) { return; }
             parsed.fullPath = Cjdnsplice.splice(parsed.path, msg.routeHeader.switchHeader.label);
 
-const ppath = parseNodeName(ping.target).path;
+const ppath = Cjdnskeys.parseNodeName(ping.target).path;
 if (ppath !== msg.routeHeader.switchHeader.label) {
     console.log(ping.target);
     console.log(msg.routeHeader.switchHeader.label);
@@ -172,7 +188,7 @@ if (parsed.fullPath.replace(/^[0\.]*/, '').length < ppath.replace(/^[0\.]*/, '')
         sendToNode(ctx, ping.target, path, ping.parentNode, ping.labelPc, ping.parentTarget, ping.querySet);
     } else {
         //console.log(ping.parentNode.publicKey + ' -> ' + msg.routeHeader.publicKey + ' ' + JSON.stringify(rb))
-        console.log(JSON.stringify(['ann', ping.parentNode.publicKey, msg.routeHeader.publicKey, rb]));
+        //console.log(JSON.stringify(['ann', ping.parentNode.publicKey, msg.routeHeader.publicKey, rb]));
         ping.parentNode.testedPeers[msg.routeHeader.publicKey] = { time: +new Date() };
         if (node.visited) { return; }
         node.visited = true;
@@ -182,7 +198,10 @@ if (parsed.fullPath.replace(/^[0\.]*/, '').length < ppath.replace(/^[0\.]*/, '')
             const childNode = ctx.nodes[v.key];
             if (childNode && childNode.reachableBy[msg.routeHeader.publicKey]) { continue; }
             if (v.fullPath === 'ffff.ffff.ffff.ffff') {
-                console.log(JSON.stringify(["hzn", v.key, v.path, msg.routeHeader.switchHeader.label]))
+                console.log(JSON.stringify(["hzn", nowSeconds(), ping.txid, v.key, ping.target, v.path]))
+                continue;
+            }
+            if (v.key === ctx.selfNode.publicKey) {
                 continue;
             }
             let request = '0000.0000.0000.0001';
@@ -219,11 +238,8 @@ if (parsed.fullPath.replace(/^[0\.]*/, '').length < ppath.replace(/^[0\.]*/, '')
 
 */
 
-const MAX_REQS = 10;
-const TIMEOUT_MS = 1000 * 30;
-
 const sendToNode = (ctx, target, nearPath, parentNode, labelPc, parentTarget, querySet) => {
-    const parsed = parseNodeName(target);
+    const parsed = Cjdnskeys.parseNodeName(target);
     if (nearPath !== '0000.0000.0000.0001') {
         const node = ctx.nodes[parsed.key];
         if (node && node.visited) {
@@ -232,15 +248,14 @@ const sendToNode = (ctx, target, nearPath, parentNode, labelPc, parentTarget, qu
         }
     }
 
-    if (parentTarget !== 'init') {
-        const ppath = parseNodeName(parentTarget).path;
-        if (parsed.path.replace(/^[0\.]*/, '').length < ppath.replace(/^[0\.]*/, '').length) {
-            console.log(target);
-            console.log(parentTarget);
-            console.log(labelPc);
-            console.log(nearPath);
-            throw new Error("path is shorter than parent path WAT");
-        }
+    const parentKey = Cjdnskeys.parseNodeName(parentTarget).key;
+    const ppath = Cjdnskeys.parseNodeName(parentTarget).path;
+    if (parsed.path.replace(/^[0\.]*/, '').length < ppath.replace(/^[0\.]*/, '').length) {
+        console.log(target);
+        console.log(parentTarget);
+        console.log(labelPc);
+        console.log(nearPath);
+        throw new Error("path is shorter than parent path WAT");
     }
 
     const out = {
@@ -269,7 +284,9 @@ const sendToNode = (ctx, target, nearPath, parentNode, labelPc, parentTarget, qu
         reqs: 0,
         timeout: undefined,
         isPing: false,
-        querySet: querySet
+        querySet: querySet,
+        txid: txid.toString('base64'),
+        nearPath: nearPath
     };
     if (nearPath === 'ping') {
         out.contentBenc.q = 'pn';
@@ -280,58 +297,132 @@ const sendToNode = (ctx, target, nearPath, parentNode, labelPc, parentTarget, qu
     }
     const trySend = () => {
         if (ping.reqs++ > MAX_REQS) {
-            console.log(JSON.stringify(["fail", target, parentTarget]));
+            console.log(JSON.stringify(["fail", nowSeconds(), ping.txid, target, parentTarget]));
             delete ctx.messages[txid.toString('base64')];
             return;
         }
-        console.log(JSON.stringify(['send', target, parentTarget, ping.reqs]));
-        sendMsg(ctx, out, target, nearPath);
-        ping.timeout = setTimeout(trySend, TIMEOUT_MS);
+        if (ping.reqs > 1) {
+            console.log(JSON.stringify(["queueresend", nowSeconds(), ping.txid, ping.reqs]));
+        }
+        //console.log(JSON.stringify(["insert", nowSeconds(), ping.txid]));
+        const oldSize = ctx.sendMessageQueue.size;
+        ctx.sendMessageQueue.insert({
+            label: parsed.path,
+            nearPath: nearPath,
+            target: target,
+            txid: ping.txid,
+            func: function () {
+                //console.log(JSON.stringify(["callfunc", nowSeconds(), ping.txid]));
+                let drop = false;
+                if (nearPath != '0000.0000.0000.0001' && nearPath != 'ping') {
+                    const gpName = JSON.stringify([ parsed.key, nearPath ]);
+                    if (ctx.getPeersCalls[gpName]) { drop = true; }
+                } else {
+                    const link = JSON.stringify([ parsed.key, Cjdnskeys.parseNodeName(ping.parentTarget).key, ping.labelPc ]);
+                    if (ctx.links[link]) { drop = true; }
+                }
+                if (drop) {
+                    //console.log(JSON.stringify(["remove", nowSeconds(), ping.txid]));
+                    delete ctx.messages[txid.toString('base64')];
+                    return false;
+                }
+                if (ping.reqs > 1) {
+                    keyPing(ctx, parsed.path, txid, ping);
+                    if (ping.reqs === 2 && nearPath !== 'ping') {
+                        setTimeout(() => {
+                            sendToNode(ctx, target, 'ping', parentNode, labelPc, parentTarget, querySet);
+                        });
+                    }
+                }
+                console.log(JSON.stringify(['send', nowSeconds(), ping.txid, target, parentTarget, nearPath, ping.reqs]));
+                ctx.cjdnslink.send(out);
+                ping.timeout = setTimeout(trySend, TIMEOUT_MS);
+            }
+        })
+        if (ctx.sendMessageQueue.size !== oldSize + 1) {
+            console.log(ping);
+            console.log(ctx.sendMessageQueue.size + ' !== ' + oldSize);
+            throw new Error("identical entries");
+        }
+        //getSessionInfo(ctx, parsed.key, (ret) => {
+            //console.log(JSON.stringify(['send', ret.state, ret.handle, nowSeconds(), target, parentTarget, nowSeconds(), nearPath, ping.reqs]));
+            //sendMsg(ctx, out, target, nearPath, { parentTarget: parentTarget, reqs: ping.reqs, key: parsed.key, ping: ping, trySend: trySend });
+        //});
     };
+
     trySend();
 };
 
-const main = () => {
-    const nodeName = process.argv.pop();
-    if (!/v[0-9]+\.[0-9a-f\.]+\.[a-z0-9]+\.k/.test(nodeName)) {
-        console.log("usage: cjdnsping v<version>.<path>.<key>.k");
-        return;
-    }
+const getPeerStats = (cjdns, cb) => {
+    const peers = [];
+    const again = (i) => {
+        cjdns.InterfaceController_peerStats(i, (err, ret) => {
+            if (err) { throw err; }
+            ret.peers.forEach((p) => {
+                if (p.state !== 'ESTABLISHED') { return; }
+                peers.push(p.addr);
+            });
+            if (typeof(ret.more) !== 'undefined') {
+                again(i+1);
+            } else {
+                cb(peers);
+            }
+        });
+    };
+    again(0);
+};
 
+const main = () => {
     const ctx = {
         nodes: {},
         messages: {},
         sendMessageQueue: new RBTree((a, b) => {
             let out = 0;
-            out += (b.nearPath === '0000.0000.0000.0001');
-            out -= (a.nearPath === '0000.0000.0000.0001');
-            if (out) { return out; }
             out += (a.label > b.label);
             out -= (a.label < b.label);
             if (out) { return out; }
-            out += a.target < b.target;
+            out += (b.nearPath === '0000.0000.0000.0001');
+            out -= (a.nearPath === '0000.0000.0000.0001');
             if (out) { return out; }
-            out += a.target > b.target;
+            out += a.target < b.target;
+            out -= a.target > b.target;
+            if (out) { return out; }
+            out += a.nearPath < b.nearPath;
+            out -= a.nearPath > b.nearPath;
             return out;
         }),
+        probedLinks: {},
+        getPeersCalls: {},
+        links: {},
         cjdns: undefined,
         cjdnslink: undefined,
-        selfNode: undefined
+        ctrllink: undefined,
+        selfNode: undefined,
+        peers: undefined
     };
+    let selfTarget;
     nThen((waitFor) => {
         Cjdnsadmin.connectWithAdminInfo(waitFor((c) => { ctx.cjdns = c; }));
+    }).nThen((waitFor) => {
+        getPeerStats(ctx.cjdns, waitFor((p) => { ctx.peers = p; }));
     }).nThen((waitFor) => {
         ctx.cjdns.Core_nodeInfo(waitFor((err, ni) => {
             if (err) { throw err; }
             const selfNode = mkNode(new Buffer(ni.compressedSchemeHex, 'hex'), ni.myAddr);
             ctx.selfNode = ctx.nodes[selfNode.publicKey] = selfNode;
             ctx.plater = mkBoilerPlater(selfNode);
+            selfTarget = ni.myAddr;
         }));
     }).nThen((waitFor) => {
         Cjdnsniff.sniffTraffic(ctx.cjdns, 'CJDHT', waitFor((err, cl) => {
-            console.log("Connected to cjdns engine");
+            //console.log("Connected to cjdns engine DHT");
             if (err) { throw err; }
             ctx.cjdnslink = cl;
+        }));
+        Cjdnsniff.sniffTraffic(ctx.cjdns, 'CTRL', waitFor((err, cl) => {
+            //console.log("Connected to cjdns engine CTRL");
+            if (err) { throw err; }
+            ctx.ctrllink = cl;
         }));
     }).nThen((waitFor) => {
         ctx.cjdnslink.on('error', (e) => {
@@ -354,21 +445,74 @@ const main = () => {
                 }
             }
         });
-        const parsed = parseNodeName(nodeName);
-        sendToNode(ctx, nodeName, '0000.0000.0000.0001', ctx.selfNode, parsed.path, 'init', {});
-        //v18.0000.0000.0000.0013.cmnkylz1dx8mx3bdxku80yw20gqmg0s9nsrusdv0psnxnfhqfmu0.k
+        ctx.ctrllink.on('error', (e) => {
+            console.log(JSON.stringify(['ctrlerr', nowSeconds(), e.message]));
+            //console.error(e.stack);
+        });
+        ctx.ctrllink.on('message', (msg) => {
+            msg.content = Cjdnsctrl.parse(msg.contentBytes);
+            if (msg.content.type === 'KEYPONG') {
+                const ping = ctx.messages[msg.content.content.toString('base64')];
+                if (!ping) {
+                    console.log(JSON.stringify([
+                        "unrecognized_keypong",
+                        nowSeconds(),
+                        msg.routeHeader.switchHeader.label
+                    ]));
+                    return;
+                }
+                if (ping.target !== 'v' + msg.content.version + '.' +
+                    msg.routeHeader.switchHeader.label + '.' + msg.content.key)
+                {
+                    console.log(JSON.stringify([
+                        "keypingmismatch",
+                        nowSeconds(),
+                        ping.txid,
+                        ping.target,
+                        msg.routeHeader.switchHeader.label,
+                        msg.content.version,
+                        msg.content.key
+                    ]));
+                } else {
+                    console.log(JSON.stringify([
+                        "recvkeyping",
+                        nowSeconds(),
+                        ping.txid,
+                        ping.target
+                    ]));
+                }
+                return;
+            }
+            if (msg.content.type !== 'ERROR' || !msg.routeHeader.isIncoming) { return; }
+            console.log(JSON.stringify([
+                'switcherr',
+                nowSeconds(),
+                msg.routeHeader.switchHeader.label,
+                msg.content.switchHeader.label,
+                msg.content.errType,
+                msg.content.nonce
+            ]));
+        });
+
+        const parsed = Cjdnskeys.parseNodeName(ctx.peers[0]);
+        sendToNode(ctx, ctx.peers[0], '0000.0000.0000.0001', ctx.selfNode, parsed.path, selfTarget, {});
 
         setInterval(() => {
-            if (!ctx.sendMessageQueue.size) { return; }
-            const next = ctx.sendMessageQueue.min();
-            ctx.sendMessageQueue.remove(next);
-            _sendMsg(ctx, next);
+            for (;;) {
+                if (!ctx.sendMessageQueue.size) { return; }
+                const next = ctx.sendMessageQueue.min();
+                //console.log(JSON.stringify(["invoke", nowSeconds(), next.txid]));
+                ctx.sendMessageQueue.remove(next);
+                if (next.func() !== false) { break; }
+            }
         }, CYCLE_TIME);
 
         setInterval(() => {
             const queueSize = ctx.sendMessageQueue.size;
             const outstandingMsgs = Object.keys(ctx.messages).length;
-            console.log(JSON.stringify(["info", queueSize, outstandingMsgs]));
+            const nodes = Object.keys(ctx.nodes).length;
+            const links = Object.keys(ctx.links).length;
+            console.log(JSON.stringify(["info", nowSeconds(), queueSize, outstandingMsgs - queueSize, nodes, links]));
             if (!queueSize && !outstandingMsgs) { process.exit(0); }
         }, 5000)
     })

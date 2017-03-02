@@ -1,13 +1,14 @@
 {
-    "name": "cjdnsmsg",
-    "version": "0.0.0",
-    "dependencies": {
-        "cjdnsadmin": "~0.0.0",
-        "nthen": "~0.1.1",
-        "cjdnskeys": "~0.1.0",
-        "cjdnsplice": "~0.2.0",
-        "cjdnsniff": "~0.1.0",
-        "cjdnsencode": "~0.0.2",
-        "bintrees": "~1.0.1"
-    }
+  "name": "cjdnsmsg",
+  "version": "0.0.0",
+  "dependencies": {
+    "bintrees": "~1.0.1",
+    "cjdnsadmin": "~0.0.0",
+    "cjdnsctrl": "0.0.1",
+    "cjdnsencode": "~0.0.2",
+    "cjdnskeys": "~0.1.1",
+    "cjdnsniff": "~0.2.4",
+    "cjdnsplice": "~0.2.0",
+    "nthen": "~0.1.1"
+  }
 }
