@@ -44,10 +44,6 @@ const main = () => {
     }
     const nodes = [];
     const links = [];
-    if (process.stdout.isTTY) {
-        console.log("Usage: node sendEntireGraph.js < walkData.txt");
-        return;
-    }
     process.stdin.pipe(Split()).on('data', (line) => {
         if (!/^\["node"|\["link"/.test(line)) { return; }
         const parsed = JSON.parse(line);
