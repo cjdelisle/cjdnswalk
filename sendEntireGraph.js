@@ -34,18 +34,6 @@ const parseLink = (x) => {
     return { a: Cjdnskeys.publicToIp6(nodes[0]), b: Cjdnskeys.publicToIp6(nodes[1]) };
 };
 
-const parseStdin = (cb) => {
-    let data = '';
-    process.stdin.resume();
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (chunk) => {
-        let lines = (data + chunk).split('\n')
-        data = lines.pop();
-        lines.forEach(cb);
-    });
-    process.stdin.on('end', () => { cb(data) });
-}
-
 const main = () => {
     const dupeFilter = {};
     const filterDups = (x) => {
