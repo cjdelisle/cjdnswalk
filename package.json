@@ -9,6 +9,7 @@
     "cjdnskeys": "~0.1.1",
     "cjdnsniff": "~0.2.4",
     "cjdnsplice": "~0.2.0",
-    "nthen": "~0.1.1"
+    "nthen": "~0.1.1",
+    "split": "~1.0.0"
   }
 }

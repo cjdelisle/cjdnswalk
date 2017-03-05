@@ -18,22 +18,35 @@ const Fs = require('fs');
 const Querystring = require('querystring');
 const Http = require('http');
 const Cjdnskeys = require('cjdnskeys');
+const Split = require('split');
 
-const MAIL = (()=>(throw new Error("You need to set your email..."))());
+const MAIL = (()=>{throw new Error("You need to set your email...")})();
+const SERVER = 'fc53:dcc5:e89d:9082:4097:6622:5e82:c654';
 
 const parseNode = (x) => {
     const nn = Cjdnskeys.parseNodeName(x[3]);
-    return ['node', { version: nn.v, ip: Cjdnskeys.publicToIp6(nn.key) }];
+    return { version: nn.v, ip: Cjdnskeys.publicToIp6(nn.key) };
 };
 
 const parseLink = (x) => {
     const nodes = [ x[3], x[4] ];
     nodes.sort();
-    return ['link', { a: Cjdnskeys.publicToIp6(nodes[0]), b: Cjdnskeys.publicToIp6(nodes[1]) }];
+    return { a: Cjdnskeys.publicToIp6(nodes[0]), b: Cjdnskeys.publicToIp6(nodes[1]) };
+};
+
+const parseStdin = (cb) => {
+    let data = '';
+    process.stdin.resume();
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk) => {
+        let lines = (data + chunk).split('\n')
+        data = lines.pop();
+        lines.forEach(cb);
+    });
+    process.stdin.on('end', () => { cb(data) });
 }
 
 const main = () => {
-    const file = process.argv.pop();
     const dupeFilter = {};
     const filterDups = (x) => {
         const xstr = JSON.stringify(x);
@@ -41,28 +54,27 @@ const main = () => {
         dupeFilter[xstr] = 1;
         return x;
     }
-    Fs.readFile(file, (err, ret) => {
-        if (err) { throw err; }
-        const nodes = [];
-        const links = [];
-        ret.toString('utf8')
-            .split('\n')
-            .filter((x)=>(x))
-            .map(JSON.parse)
-            .filter((x) => (/^node|link$/.test(x[0])))
-            .map((x) => (x[0] === 'node' ? parseNode(x) : x))
-            .map((x) => (x[0] === 'link' ? parseLink(x) : x))
-            .filter((x) => (filterDups(x)))
-            //.forEach((x) => (console.log(JSON.stringify(x))));
-            .forEach((x) => (({ node: nodes, link: links })[x[0]].push(x[1])));
-
+    const nodes = [];
+    const links = [];
+    if (process.stdout.isTTY) {
+        console.log("Usage: node sendEntireGraph.js < walkData.txt");
+        return;
+    }
+    process.stdin.pipe(Split()).on('data', (line) => {
+        if (!/^\["node"|\["link"/.test(line)) { return; }
+        const parsed = JSON.parse(line);
+        const isNode = (parsed[0] === 'node');
+        const obj = isNode ? parseNode(parsed) : parseLink(parsed);
+        if (!filterDups(obj)) { return; }
+        (isNode ? nodes : links).push(obj);
+    }).on('end', () => {
         const post = Querystring.stringify({
             data: JSON.stringify({ nodes: nodes, edges: links }),
             version: 2,
             mail: MAIL });
 
         var opts = {
-            host: 'fc53:dcc5:e89d:9082:4097:6622:5e82:c654',
+            host: SERVER,
             port: '80',
             path: '/sendGraph',
             method: 'POST',
