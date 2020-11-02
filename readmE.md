@@ -1,5 +1,7 @@
 # Cjdnswalk network walker
 
+Status: unmaintained, this creates a lot of traffic and should not be used, use cjdnsnode to make network graphs instead
+
 ## Usage:
 
     npm install
